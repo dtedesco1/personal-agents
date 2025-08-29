@@ -51,19 +51,20 @@ Dependencies:
 Environment Variables:
     - EXA_API_KEY: Required for API access
 """
+# Export ToolSpec for generic server auto-registration
+from mcp_servers.tooling import ToolSpec
+
 
 import os
 from datetime import datetime, timedelta
-from typing import Dict
-
-from exa_py import Exa
+from exa_py import Exa  # require exa-py at import time for simplicity
 
 
 def _exa_search(
     query: str,
     lookback_days: int,
     num_results: int,
-    highlights: bool | Dict,
+    highlights: dict | bool,
     fetch_fulltext: bool,
 ) -> dict:
     """
@@ -114,21 +115,52 @@ def _exa_search(
         specialized wrapper functions (exa_wide_search, exa_deep_search) which
         provide appropriate configurations for different use cases.
     """
-    exa: Exa = Exa(api_key=os.getenv("EXA_API_KEY"))
-    results = exa.search_and_contents(
-        query=query,
-        type="auto",
-        num_results=num_results,
-        highlights=highlights,
-        start_published_date=(
-            datetime.now() - timedelta(days=lookback_days)
-        ).isoformat(),
-        text=fetch_fulltext,
-    )
+    # Resolve and validate API key (server loads .env at startup)
+    api_key = os.getenv("EXA_API_KEY")
+    if not api_key:
+        raise ValueError("Missing EXA_API_KEY environment variable for Exa API access.")
+
+    # Defensive validation for lookback_days (>=1)
+    try:
+        lookback_days_int = int(lookback_days)
+        if lookback_days_int <= 0:
+            raise ValueError
+    except Exception:
+        raise ValueError("lookback_days must be a positive integer (>=1).")
+
+    # Lazy import here to avoid forcing exa-py dependency during server startup
+    try:
+        from exa_py import Exa  # type: ignore
+    except Exception as e:  # ImportError or pkg not available
+        raise RuntimeError(
+            "exa-py is not installed. To use Exa tools, install it in your environment.\n"
+            "Options:\n"
+            "- Use a project venv: pip install exa-py\n"
+            "- Or run via uvx adding --with exa-py\n"
+            "- Or add exa-py to your dev environment where OpenCode runs\n"
+            "Also set EXA_API_KEY in the environment before calling these tools."
+        ) from e
+
+    exa: Exa = Exa(api_key=api_key)
+    kwargs: dict = {
+        "query": query,
+        "type": "auto",
+        "num_results": num_results,
+        "start_published_date": (datetime.now() - timedelta(days=lookback_days_int)).isoformat(),
+    }
+    # Exa expects True or an options object for these fields; omit to disable
+    if fetch_fulltext:
+        kwargs["text"] = True
+    if isinstance(highlights, dict):
+        kwargs["highlights"] = highlights
+    elif highlights is True:
+        kwargs["highlights"] = True
+
+    results = exa.search_and_contents(**kwargs)
     return {"type": "exa", "results": [r.__dict__ for r in results.results]}
 
 
-def exa_wide_search(query: str, lookback_days: int) -> dict:
+def exa_wide_search(query: str, lookback_days: int | None) -> dict:
     """
     Perform a wide search for comprehensive topic coverage.
 
@@ -147,47 +179,20 @@ def exa_wide_search(query: str, lookback_days: int) -> dict:
         query: The search query string. Should be descriptive and specific
             enough to get relevant results. Examples: "artificial intelligence news",
             "climate change policy 2024", "quantum computing breakthroughs".
-        lookback_days: Number of days to look back from current date.
-            Must be positive integer. Typical values: 1-30 days.
-            Shorter periods for breaking news, longer for comprehensive analysis.
+        lookback_days: Optional number of days to look back from current date.
+            If None, defaults to EXA_DEFAULT_LOOKBACK_DAYS (env) or 3.
 
     Returns:
-        Dictionary containing search results in standardized format:
-        {
-            "type": "exa",
-            "results": [
-                {
-                    "title": "Article title",
-                    "url": "https://example.com/article",
-                    "published_date": "2024-01-15T10:00:00Z",
-                    "score": 0.95,
-                    "highlights": [
-                        "First relevant highlight sentence...",
-                        "Second relevant highlight sentence..."
-                    ]
-                }
-            ]
-        }
-
-        Results are sorted by relevance score (highest first).
-        Each result includes 2 highlights with up to 3 sentences each.
-
-    Raises:
-        ValueError: If query is empty or lookback_days is not positive.
-        ExaAPIError: If the Exa API returns an error.
-        ConnectionError: If unable to connect to Exa API.
-
-    Example:
-        >>> results = exa_wide_search("machine learning trends", 7)
-        >>> print(f"Found {len(results['results'])} articles")
-        >>> for article in results['results'][:3]:
-        ...     print(f"- {article['title']}")
-        ...     print(f"  {article['highlights'][0]}")
-
-    Note:
-        This function is designed for use by the WideSearchAgent. For detailed
-        content analysis, use exa_deep_search instead.
+        Dictionary containing search results in standardized format.
     """
+    # Resolve default lookback if not provided
+    if lookback_days is None:
+        from os import getenv
+        try:
+            lookback_days = int(getenv("EXA_DEFAULT_LOOKBACK_DAYS", "3"))
+        except Exception:
+            lookback_days = 3
+
     results = _exa_search(
         query=query,
         lookback_days=lookback_days,
@@ -198,64 +203,24 @@ def exa_wide_search(query: str, lookback_days: int) -> dict:
     return results
 
 
-def exa_deep_search(query: str, lookback_days: int) -> dict:
+def exa_deep_search(query: str, lookback_days: int | None) -> dict:
     """
     Perform a deep search for focused, detailed content analysis.
 
-    This function is optimized for in-depth analysis of specific topics.
-    It returns 5 results with full text content to enable comprehensive
-    analysis, fact-checking, and detailed understanding. Ideal for research,
-    detailed reporting, and thorough topic investigation.
-
-    Search Configuration:
-        - Results: 5 articles maximum (optimized for context window limits)
-        - Content: Full text of articles
-        - Strategy: Depth over breadth
-        - Use Case: Research, detailed analysis, fact verification
-
     Args:
-        query: The search query string. Should be specific and focused
-            for best results. Examples: "CRISPR gene editing ethics",
-            "renewable energy storage solutions", "quantum entanglement applications".
-        lookback_days: Number of days to look back from current date.
-            Must be positive integer. Typical values: 7-90 days.
-            Longer periods recommended for research topics with less frequent updates.
+        query: The search query string.
+        lookback_days: Optional number of days; if None uses EXA_DEFAULT_LOOKBACK_DAYS (env) or 3.
 
     Returns:
-        Dictionary containing search results in standardized format:
-        {
-            "type": "exa",
-            "results": [
-                {
-                    "title": "Article title",
-                    "url": "https://example.com/article",
-                    "published_date": "2024-01-15T10:00:00Z",
-                    "score": 0.95,
-                    "text": "Complete article text content..."
-                }
-            ]
-        }
-
-        Results are sorted by relevance score (highest first).
-        Each result includes the complete article text for detailed analysis.
-
-    Raises:
-        ValueError: If query is empty or lookback_days is not positive.
-        ExaAPIError: If the Exa API returns an error.
-        ConnectionError: If unable to connect to Exa API.
-
-    Example:
-        >>> results = exa_deep_search("artificial general intelligence safety", 30)
-        >>> print(f"Found {len(results['results'])} detailed articles")
-        >>> for article in results['results']:
-        ...     print(f"- {article['title']}")
-        ...     print(f"  Content length: {len(article['text'])} characters")
-
-    Note:
-        This function is designed for use by the DeepSearchAgent.
-        For broad topic coverage, use exa_wide_search instead.
-        Full text content can be quite large - consider memory usage for batch processing.
+        Dictionary containing search results in standardized format.
     """
+    if lookback_days is None:
+        from os import getenv
+        try:
+            lookback_days = int(getenv("EXA_DEFAULT_LOOKBACK_DAYS", "3"))
+        except Exception:
+            lookback_days = 3
+
     results = _exa_search(
         query=query,
         lookback_days=lookback_days,
@@ -264,3 +229,10 @@ def exa_deep_search(query: str, lookback_days: int) -> dict:
         fetch_fulltext=True,
     )
     return results
+
+
+# Register via TOOL_SPECS for the generic server
+TOOL_SPECS = [
+    ToolSpec(func=exa_wide_search, name="wide_search", annotations={"title": "Exa Wide Search", "readOnlyHint": True}),
+    ToolSpec(func=exa_deep_search, name="deep_search", annotations={"title": "Exa Deep Search", "readOnlyHint": True}),
+]

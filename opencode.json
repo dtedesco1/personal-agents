@@ -1,0 +1,35 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "personal": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "--with",
+        "fastmcp",
+        "--with",
+        "exa-py",
+        "fastmcp",
+        "run",
+        "mcp_servers/generic_server.py:mcp"
+      ],
+      "enabled": true
+    },
+    "context7": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "npx",
+        "-y",
+        "@upstash/context7-mcp"
+      ]
+    },
+    "time": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "mcp-server-time"
+      ]
+    }
+  }
+}
