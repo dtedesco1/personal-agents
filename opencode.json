@@ -7,8 +7,6 @@
         "uvx",
         "--with",
         "fastmcp",
-        "--with",
-        "exa-py",
         "fastmcp",
         "run",
         "mcp_servers/generic_server.py:mcp"

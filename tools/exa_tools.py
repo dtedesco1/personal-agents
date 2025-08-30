@@ -57,7 +57,6 @@ from mcp_servers.tooling import ToolSpec
 
 import os
 from datetime import datetime, timedelta
-from exa_py import Exa  # require exa-py at import time for simplicity
 
 
 def _exa_search(
